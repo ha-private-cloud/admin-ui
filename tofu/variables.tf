@@ -57,19 +57,20 @@ variable "auth_api_internal_url" {
   default     = "http://auth-api.clusterkeep-dev-priv.svc.cluster.local"
 }
 
-variable "admin_ui_bootstrap_username" {
-  description = "Comma-separated auth-api usernames granted the admin-ui admin role on first login. Each must match an existing auth-api account's username exactly."
+variable "clusterkeep_ui_base_url" {
+  description = "clusterkeep-ui URL a signed-out admin is sent to after logging out."
   type        = string
+  default     = "https://dev.clusterkeep.dev.net"
 }
 
-variable "postgres_image" {
-  description = "Postgres image backing admin-ui's user/role table."
+variable "storage_ui_base_url" {
+  description = "storage-ui URL the header back button targets."
   type        = string
-  default     = "postgres:16"
+  default     = "https://storage-dev.clusterkeep.dev.net"
 }
 
-variable "postgres_storage_size" {
-  description = "Size of the PVC (nfs-csi StorageClass) Postgres stores admin-ui's data on."
+variable "headlamp_url" {
+  description = "Headlamp URL the header button targets. Set to \"\" to hide the button."
   type        = string
-  default     = "1Gi"
+  default     = "https://headlamp.clusterkeep.dev.net"
 }

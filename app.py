@@ -1,13 +1,16 @@
 import os
+import uuid
+from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import requests
 from flask import Flask, abort, g, redirect, render_template, request, url_for
-from sqlalchemy import String, create_engine, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 app = Flask(__name__)
 
+APP_TITLE = os.environ.get("APP_TITLE", "ClusterKeep")
 SESSION_COOKIE_NAME = "ck_sso"
+ADMIN_GROUPS = ("cluster-admins", "admin")
 VALID_ROLES = ("user", "admin")
 
 app.config["AUTH_API_BASE_URL"] = os.environ.get(
@@ -16,10 +19,13 @@ app.config["AUTH_API_BASE_URL"] = os.environ.get(
 app.config["AUTH_API_INTERNAL_URL"] = os.environ.get(
     "AUTH_API_INTERNAL_URL", "http://auth-api.clusterkeep-dev-priv.svc.cluster.local"
 ).strip()
-app.config["DATABASE_URL"] = os.environ.get(
-    "DATABASE_URL", "postgresql+psycopg://admin_ui:admin_ui@postgres:5432/admin_ui"
+app.config["CLUSTERKEEP_UI_URL"] = os.environ.get(
+    "CLUSTERKEEP_UI_URL", "https://dev.clusterkeep.dev.net"
 ).strip()
-app.config["ADMIN_UI_BOOTSTRAP_USERNAME"] = os.environ.get("ADMIN_UI_BOOTSTRAP_USERNAME", "").strip()
+app.config["STORAGE_UI_URL"] = os.environ.get(
+    "STORAGE_UI_URL", "https://storage-dev.clusterkeep.dev.net"
+).strip()
+app.config["HEADLAMP_URL"] = os.environ.get("HEADLAMP_URL", "").strip()
 
 CONTENT_SECURITY_POLICY = "; ".join(
     [
@@ -51,44 +57,8 @@ def set_security_headers(response):
     return response
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-class User(Base):
-    __tablename__ = "users"
-
-    sub: Mapped[str] = mapped_column(String(64), primary_key=True)
-    username: Mapped[str] = mapped_column(String(64))
-    email: Mapped[str | None] = mapped_column(String(255), default=None)
-    role: Mapped[str] = mapped_column(String(16), default="user")
-
-
-def _db_session():
-    engine = create_engine(app.config["DATABASE_URL"], future=True)
-    Base.metadata.create_all(engine)
-    return Session(engine)
-
-
-def _upsert_user(db, sub, username, email):
-    user = db.get(User, sub)
-    if user is None:
-        user = User(sub=sub, username=username, email=email)
-        db.add(user)
-    else:
-        user.username = username
-        user.email = email
-    _bootstrap_admin(user)
-    db.commit()
-    return user
-
-
-def _bootstrap_admin(user):
-    bootstrap_usernames = {
-        name.strip() for name in app.config["ADMIN_UI_BOOTSTRAP_USERNAME"].split(",") if name.strip()
-    }
-    if user.username in bootstrap_usernames:
-        user.role = "admin"
+def _internal_url(path):
+    return f"{app.config['AUTH_API_INTERNAL_URL'].rstrip('/')}{path}"
 
 
 def _current_session():
@@ -96,11 +66,7 @@ def _current_session():
     if not token:
         return None
     try:
-        response = requests.get(
-            f"{app.config['AUTH_API_INTERNAL_URL'].rstrip('/')}/session",
-            cookies={SESSION_COOKIE_NAME: token},
-            timeout=3,
-        )
+        response = requests.get(_internal_url("/session"), cookies={SESSION_COOKIE_NAME: token}, timeout=3)
     except requests.RequestException:
         return None
     if response.status_code != 200:
@@ -108,53 +74,112 @@ def _current_session():
     return response.json()
 
 
+def _mint_service_token(session_cookie_value):
+    try:
+        response = requests.post(
+            _internal_url("/api/v1/service-tokens"),
+            cookies={SESSION_COOKIE_NAME: session_cookie_value},
+            json={"name": f"admin-ui-{uuid.uuid4().hex}", "audience": "auth-api", "scopes": []},
+            timeout=5,
+        )
+    except requests.RequestException:
+        return None
+    if response.status_code != 201:
+        return None
+    return response.json()["token"]
+
+
+def _auth_headers():
+    token = _mint_service_token(g.session_cookie)
+    if token is None:
+        abort(502, "could not authenticate to auth-api")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _is_admin(groups):
+    return any(group in ADMIN_GROUPS for group in groups)
+
+
+def logout_url():
+    query = urlencode({"post_logout_redirect_uri": app.config["CLUSTERKEEP_UI_URL"]})
+    return f"{app.config['AUTH_API_BASE_URL'].rstrip('/')}/logout?{query}"
+
+
+@app.context_processor
+def inject_globals():
+    return {
+        "title": APP_TITLE,
+        "year": datetime.now(timezone.utc).year,
+        "headlamp_url": app.config["HEADLAMP_URL"],
+        "storage_ui_url": app.config["STORAGE_UI_URL"],
+        "logout_url": logout_url(),
+    }
+
+
 @app.before_request
 def require_admin():
-    if request.path == "/healthz":
+    if request.path == "/healthz" or request.path.startswith("/static/"):
         return None
 
     session = _current_session()
-    if session is None:
+    if session is None or not _is_admin(session.get("groups", [])):
         abort(404)
 
-    db = _db_session()
-    try:
-        user = _upsert_user(db, session["sub"], session["preferred_username"], session.get("email"))
-        if user.role != "admin":
-            abort(404)
-        g.current_sub = user.sub
-        g.current_username = user.username
-    finally:
-        db.close()
+    g.current_sub = session["sub"]
+    g.current_username = session["preferred_username"]
+    g.session_cookie = request.cookies.get(SESSION_COOKIE_NAME)
 
 
 @app.get("/")
 def index():
-    db = _db_session()
-    try:
-        users = db.scalars(select(User).order_by(User.username)).all()
-        return render_template("index.html", users=users, current_sub=g.current_sub)
-    finally:
-        db.close()
+    response = requests.get(_internal_url("/api/v1/users"), headers=_auth_headers(), timeout=5)
+    if response.status_code != 200:
+        abort(502, "could not list users")
+
+    users = [
+        {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "role": "admin" if _is_admin(user["groups"]) else "user",
+        }
+        for user in response.json()
+    ]
+    return render_template("index.html", users=users, current_sub=g.current_sub)
 
 
-@app.post("/users/<sub>/role")
-def set_role(sub):
+@app.post("/users/<user_id>/role")
+def set_role(user_id):
     role = request.form.get("role", "")
     if role not in VALID_ROLES:
         abort(400)
-    if sub == g.current_sub and role != "admin":
+    if user_id == g.current_sub and role != "admin":
         abort(400, "cannot remove your own admin access")
 
-    db = _db_session()
-    try:
-        user = db.get(User, sub)
-        if user is None:
-            abort(404)
-        user.role = role
-        db.commit()
-    finally:
-        db.close()
+    headers = _auth_headers()
+    users_response = requests.get(_internal_url("/api/v1/users"), headers=headers, timeout=5)
+    if users_response.status_code != 200:
+        abort(502, "could not list users")
+
+    target = next((u for u in users_response.json() if u["id"] == user_id), None)
+    if target is None:
+        abort(404)
+
+    groups = set(target["groups"])
+    if role == "admin":
+        groups.add("admin")
+    else:
+        groups.discard("admin")
+
+    patch_response = requests.patch(
+        _internal_url(f"/api/v1/users/{user_id}/groups"),
+        json={"groups": sorted(groups)},
+        headers=headers,
+        timeout=5,
+    )
+    if patch_response.status_code != 200:
+        abort(502, "could not update groups")
+
     return redirect(url_for("index"))
 
 

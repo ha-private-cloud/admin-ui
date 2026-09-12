@@ -10,8 +10,9 @@ services:
     environment:
       AUTH_API_BASE_URL: http://localhost:9082
       AUTH_API_INTERNAL_URL: http://auth-api:8000
-      DATABASE_URL: sqlite:////app/dev.db
-      ADMIN_UI_BOOTSTRAP_USERNAME: admin
+      CLUSTERKEEP_UI_URL: http://localhost:9080
+      STORAGE_UI_URL: http://localhost:9081
+      HEADLAMP_URL: https://headlamp.clusterkeep.dev.net
     depends_on:
       - auth-api
     volumes:

@@ -39,27 +39,6 @@ locals {
   )
 }
 
-resource "random_password" "postgres" {
-  length  = 32
-  special = false
-}
-
-resource "kubernetes_secret" "admin_ui" {
-  metadata {
-    name      = "${local.instance_name}-secrets"
-    namespace = data.kubernetes_namespace.admin_ui.metadata[0].name
-  }
-
-  data = {
-    DATABASE_URL = format(
-      "postgresql+psycopg://admin_ui:%s@%s.%s.svc.cluster.local:5432/admin_ui",
-      random_password.postgres.result,
-      kubernetes_service.postgres.metadata[0].name,
-      data.kubernetes_namespace.admin_ui.metadata[0].name,
-    )
-  }
-}
-
 resource "helm_release" "admin_ui" {
   name      = local.instance_name
   chart     = "${path.module}/../../charts/admin-ui"
@@ -83,19 +62,10 @@ resource "helm_release" "admin_ui" {
       env = [
         { name = "AUTH_API_BASE_URL", value = var.auth_api_base_url },
         { name = "AUTH_API_INTERNAL_URL", value = var.auth_api_internal_url },
-        { name = "ADMIN_UI_BOOTSTRAP_USERNAME", value = var.admin_ui_bootstrap_username },
-        {
-          name = "DATABASE_URL"
-          valueFrom = {
-            secretKeyRef = {
-              name = kubernetes_secret.admin_ui.metadata[0].name
-              key  = "DATABASE_URL"
-            }
-          }
-        },
+        { name = "CLUSTERKEEP_UI_URL", value = var.clusterkeep_ui_base_url },
+        { name = "STORAGE_UI_URL", value = var.storage_ui_base_url },
+        { name = "HEADLAMP_URL", value = var.headlamp_url },
       ]
     })
   ]
-
-  depends_on = [kubernetes_stateful_set_v1.postgres]
 }
