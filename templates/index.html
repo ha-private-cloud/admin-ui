@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  </head>
+  <body>
+    <main>
+      <h1>Users</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+          <tr>
+            <td>{{ user.username }}{% if user.sub == current_sub %} (you){% endif %}</td>
+            <td>{{ user.email or "" }}</td>
+            <td>{{ user.role }}</td>
+            <td>
+              <form method="post" action="{{ url_for('set_role', sub=user.sub) }}">
+                {% if user.role == "admin" %}
+                <input type="hidden" name="role" value="user" />
+                <button type="submit">Demote to user</button>
+                {% else %}
+                <input type="hidden" name="role" value="admin" />
+                <button type="submit">Promote to admin</button>
+                {% endif %}
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>
