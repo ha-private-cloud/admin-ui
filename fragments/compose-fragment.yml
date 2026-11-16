@@ -8,7 +8,6 @@ services:
     ports:
       - "127.0.0.1:9083:5000"
     environment:
-      AUTH_API_BASE_URL: http://localhost:9082
       AUTH_API_INTERNAL_URL: http://auth-api:8000
       CLUSTERKEEP_UI_URL: http://localhost:9080
       STORAGE_UI_URL: http://localhost:9081

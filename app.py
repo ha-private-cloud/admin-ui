@@ -1,7 +1,6 @@
 import os
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlencode
 
 import requests
 from flask import Flask, abort, g, redirect, render_template, request, url_for
@@ -20,9 +19,6 @@ CLUSTER_ROLE_GROUPS = {
 }
 CLUSTER_ROLES = ("none", *CLUSTER_ROLE_GROUPS)
 
-app.config["AUTH_API_BASE_URL"] = os.environ.get(
-    "AUTH_API_BASE_URL", "https://auth-dev.clusterkeep.dev.net"
-).strip()
 app.config["AUTH_API_INTERNAL_URL"] = os.environ.get(
     "AUTH_API_INTERNAL_URL", "http://auth-api.clusterkeep-dev-priv.svc.cluster.local"
 ).strip()
@@ -136,8 +132,7 @@ def _patch_groups(headers, user_id, groups):
 
 
 def logout_url():
-    query = urlencode({"post_logout_redirect_uri": app.config["CLUSTERKEEP_UI_URL"]})
-    return f"{app.config['AUTH_API_BASE_URL'].rstrip('/')}/logout?{query}"
+    return f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/logout"
 
 
 @app.context_processor

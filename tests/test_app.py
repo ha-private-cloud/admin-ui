@@ -374,16 +374,13 @@ def test_storage_ui_link_hidden_when_not_configured(client, monkeypatch):
     assert "Back to Storage" not in body
 
 
-def test_sign_out_link_points_to_auth_apis_logout(client):
+def test_sign_out_link_points_to_clusterkeep_ui_logout(client):
     with responses_lib.RequestsMock() as rsps:
         as_admin(client, rsps)
         mock_mint(rsps)
         mock_users_list(rsps)
         body = client.get("/").get_data(as_text=True)
-    assert (
-        "https://auth-dev.clusterkeep.dev.net/logout"
-        "?post_logout_redirect_uri=https%3A%2F%2Fdev.clusterkeep.dev.net"
-    ) in body
+    assert 'href="https://dev.clusterkeep.dev.net/logout"' in body
 
 
 def test_failed_token_mint_returns_502(client):
