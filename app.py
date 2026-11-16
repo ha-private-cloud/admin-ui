@@ -20,7 +20,7 @@ CLUSTER_ROLE_GROUPS = {
 CLUSTER_ROLES = ("none", *CLUSTER_ROLE_GROUPS)
 
 app.config["AUTH_API_INTERNAL_URL"] = os.environ.get(
-    "AUTH_API_INTERNAL_URL", "http://auth-api.clusterkeep-dev-priv.svc.cluster.local"
+    "AUTH_API_INTERNAL_URL", "http://auth-api.auth-dev-pub.svc.cluster.local"
 ).strip()
 app.config["CLUSTERKEEP_UI_URL"] = os.environ.get(
     "CLUSTERKEEP_UI_URL", "https://dev.clusterkeep.dev.net"
