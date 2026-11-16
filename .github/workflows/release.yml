@@ -21,3 +21,4 @@ jobs:
       app: admin-ui
       tag: ${{ inputs.tag || github.ref_name }}
       deploy: ${{ github.event_name == 'workflow_dispatch' }}
+      namespace_override: admin-ui-prd-pub
