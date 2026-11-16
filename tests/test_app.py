@@ -225,6 +225,36 @@ def test_user_without_an_admin_group_gets_404(client):
         assert client.get("/").status_code == 404
 
 
+def assert_not_found_page(response):
+    body = response.get_data(as_text=True)
+    assert response.status_code == 404
+    assert "Page not found" in body
+    for leaked in ("Sign out", "Open Headlamp", "Back to Storage", "Users", "Cluster access"):
+        assert leaked not in body
+
+
+def test_signed_out_visitor_sees_the_not_found_page(client):
+    assert_not_found_page(client.get("/"))
+
+
+def test_non_admin_sees_the_not_found_page(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_regular_user(client, rsps)
+        assert_not_found_page(client.get("/"))
+
+
+def test_unknown_path_for_an_admin_shows_the_not_found_page(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        assert_not_found_page(client.get("/does-not-exist"))
+
+
+def test_not_found_page_links_back_to_clusterkeep(client):
+    body = client.get("/").get_data(as_text=True)
+    assert f'href="{app.config["CLUSTERKEEP_UI_URL"]}"' in body
+    assert "Back to ClusterKeep" in body
+
+
 def test_admin_group_grants_access_and_lists_users(client):
     with responses_lib.RequestsMock() as rsps:
         as_admin(client, rsps)
@@ -236,8 +266,7 @@ def test_admin_group_grants_access_and_lists_users(client):
 
 
 def test_each_mint_uses_a_distinct_token_name(client):
-    """auth-api rejects a second token with the same (user, name) pair -- a fixed
-    name here would 500 on any second request from the same admin."""
+    """auth-api rejects a second token with the same (user, name) pair."""
     import json
 
     names = []
@@ -362,3 +391,79 @@ def test_failed_token_mint_returns_502(client):
         as_admin(client, rsps)
         rsps.add(responses_lib.POST, f"{AUTH_API_INTERNAL_URL}/api/v1/service-tokens", status=401)
         assert client.get("/").status_code == 502
+
+
+def as_cluster_admin(client, rsps):
+    client.set_cookie("ck_sso", "cluster-admin-token")
+    mock_session(rsps, CLUSTER_ADMIN_SESSION)
+
+
+def test_cluster_admin_sets_cluster_access_replacing_the_previous_level(client):
+    import json
+
+    with responses_lib.RequestsMock() as rsps:
+        as_cluster_admin(client, rsps)
+        mock_mint(rsps)
+        mock_users_list(rsps, users=[{**USERS_LIST[1], "groups": ["admin", "cluster-viewers"]}])
+        rsps.add(
+            responses_lib.PATCH,
+            f"{AUTH_API_INTERNAL_URL}/api/v1/users/user-2/groups",
+            json={**USERS_LIST[1], "groups": ["admin", "cluster-editors"]},
+            status=200,
+        )
+        response = client.post("/users/user-2/cluster-role", data={"cluster_role": "edit"})
+        assert response.status_code == 302
+
+        patch_call = [c for c in rsps.calls if c.request.method == "PATCH"][0]
+        assert json.loads(patch_call.request.body)["groups"] == ["admin", "cluster-editors"]
+
+
+def test_removing_cluster_access_drops_every_cluster_group(client):
+    import json
+
+    with responses_lib.RequestsMock() as rsps:
+        as_cluster_admin(client, rsps)
+        mock_mint(rsps)
+        mock_users_list(rsps, users=[{**USERS_LIST[1], "groups": ["cluster-admins", "viewers"]}])
+        rsps.add(
+            responses_lib.PATCH,
+            f"{AUTH_API_INTERNAL_URL}/api/v1/users/user-2/groups",
+            json={**USERS_LIST[1], "groups": ["viewers"]},
+            status=200,
+        )
+        client.post("/users/user-2/cluster-role", data={"cluster_role": "none"})
+
+        patch_call = [c for c in rsps.calls if c.request.method == "PATCH"][0]
+        assert json.loads(patch_call.request.body)["groups"] == ["viewers"]
+
+
+def test_app_admin_cannot_change_cluster_access(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        assert client.post("/users/user-2/cluster-role", data={"cluster_role": "admin"}).status_code == 403
+
+
+def test_cluster_admin_cannot_change_their_own_cluster_access(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_cluster_admin(client, rsps)
+        assert client.post("/users/user-3/cluster-role", data={"cluster_role": "none"}).status_code == 400
+
+
+def test_set_cluster_role_rejects_unknown_levels(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_cluster_admin(client, rsps)
+        assert client.post("/users/user-2/cluster-role", data={"cluster_role": "root"}).status_code == 400
+
+
+def test_cluster_access_is_editable_only_for_cluster_admins(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_cluster_admin(client, rsps)
+        mock_mint(rsps)
+        mock_users_list(rsps)
+        assert b'name="cluster_role"' in client.get("/").data
+
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_mint(rsps)
+        mock_users_list(rsps)
+        assert b'name="cluster_role"' not in client.get("/").data

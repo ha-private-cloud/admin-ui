@@ -12,6 +12,13 @@ APP_TITLE = os.environ.get("APP_TITLE", "ClusterKeep")
 SESSION_COOKIE_NAME = "ck_sso"
 ADMIN_GROUPS = ("cluster-admins", "admin")
 VALID_ROLES = ("user", "admin")
+CLUSTER_ADMIN_GROUP = "cluster-admins"
+CLUSTER_ROLE_GROUPS = {
+    "admin": "cluster-admins",
+    "edit": "cluster-editors",
+    "view": "cluster-viewers",
+}
+CLUSTER_ROLES = ("none", *CLUSTER_ROLE_GROUPS)
 
 app.config["AUTH_API_BASE_URL"] = os.environ.get(
     "AUTH_API_BASE_URL", "https://auth-dev.clusterkeep.dev.net"
@@ -100,6 +107,34 @@ def _is_admin(groups):
     return any(group in ADMIN_GROUPS for group in groups)
 
 
+def _cluster_role(groups):
+    for role, group in CLUSTER_ROLE_GROUPS.items():
+        if group in groups:
+            return role
+    return "none"
+
+
+def _fetch_user(headers, user_id):
+    response = requests.get(_internal_url("/api/v1/users"), headers=headers, timeout=5)
+    if response.status_code != 200:
+        abort(502, "could not list users")
+    target = next((u for u in response.json() if u["id"] == user_id), None)
+    if target is None:
+        abort(404)
+    return target
+
+
+def _patch_groups(headers, user_id, groups):
+    response = requests.patch(
+        _internal_url(f"/api/v1/users/{user_id}/groups"),
+        json={"groups": sorted(groups)},
+        headers=headers,
+        timeout=5,
+    )
+    if response.status_code != 200:
+        abort(502, "could not update groups")
+
+
 def logout_url():
     query = urlencode({"post_logout_redirect_uri": app.config["CLUSTERKEEP_UI_URL"]})
     return f"{app.config['AUTH_API_BASE_URL'].rstrip('/')}/logout?{query}"
@@ -116,6 +151,11 @@ def inject_globals():
     }
 
 
+@app.errorhandler(404)
+def not_found(_error):
+    return render_template("404.html", clusterkeep_ui_url=app.config["CLUSTERKEEP_UI_URL"]), 404
+
+
 @app.before_request
 def require_admin():
     if request.path == "/healthz" or request.path.startswith("/static/"):
@@ -126,6 +166,7 @@ def require_admin():
         abort(404)
 
     g.current_sub = session["sub"]
+    g.can_manage_cluster = CLUSTER_ADMIN_GROUP in session.get("groups", [])
     g.current_username = session["preferred_username"]
     g.session_cookie = request.cookies.get(SESSION_COOKIE_NAME)
 
@@ -141,11 +182,18 @@ def index():
             "id": user["id"],
             "username": user["username"],
             "email": user["email"],
-            "role": "admin" if _is_admin(user["groups"]) else "user",
+            "role": "admin" if "admin" in user["groups"] else "user",
+            "cluster_role": _cluster_role(user["groups"]),
         }
         for user in response.json()
     ]
-    return render_template("index.html", users=users, current_sub=g.current_sub)
+    return render_template(
+        "index.html",
+        users=users,
+        current_sub=g.current_sub,
+        can_manage_cluster=g.can_manage_cluster,
+        cluster_roles=CLUSTER_ROLES,
+    )
 
 
 @app.post("/users/<user_id>/role")
@@ -157,29 +205,32 @@ def set_role(user_id):
         abort(400, "cannot remove your own admin access")
 
     headers = _auth_headers()
-    users_response = requests.get(_internal_url("/api/v1/users"), headers=headers, timeout=5)
-    if users_response.status_code != 200:
-        abort(502, "could not list users")
-
-    target = next((u for u in users_response.json() if u["id"] == user_id), None)
-    if target is None:
-        abort(404)
-
-    groups = set(target["groups"])
+    groups = set(_fetch_user(headers, user_id)["groups"])
     if role == "admin":
         groups.add("admin")
     else:
         groups.discard("admin")
 
-    patch_response = requests.patch(
-        _internal_url(f"/api/v1/users/{user_id}/groups"),
-        json={"groups": sorted(groups)},
-        headers=headers,
-        timeout=5,
-    )
-    if patch_response.status_code != 200:
-        abort(502, "could not update groups")
+    _patch_groups(headers, user_id, groups)
+    return redirect(url_for("index"))
 
+
+@app.post("/users/<user_id>/cluster-role")
+def set_cluster_role(user_id):
+    role = request.form.get("cluster_role", "")
+    if role not in CLUSTER_ROLES:
+        abort(400)
+    if not g.can_manage_cluster:
+        abort(403)
+    if user_id == g.current_sub:
+        abort(400, "cannot change your own cluster access")
+
+    headers = _auth_headers()
+    groups = set(_fetch_user(headers, user_id)["groups"]) - set(CLUSTER_ROLE_GROUPS.values())
+    if role != "none":
+        groups.add(CLUSTER_ROLE_GROUPS[role])
+
+    _patch_groups(headers, user_id, groups)
     return redirect(url_for("index"))
 
 
