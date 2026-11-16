@@ -153,7 +153,7 @@ def inject_globals():
 
 @app.errorhandler(404)
 def not_found(_error):
-    return render_template("404.html", clusterkeep_ui_url=app.config["CLUSTERKEEP_UI_URL"]), 404
+    return render_template("404.html", home_url=app.config["CLUSTERKEEP_UI_URL"]), 404
 
 
 @app.before_request
