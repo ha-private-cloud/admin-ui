@@ -15,6 +15,7 @@
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Username</th>
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Email</th>
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Role</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Cluster access</th>
           <th class="px-4 py-3"></th>
         </tr>
       </thead>
@@ -34,6 +35,30 @@
             <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 text-stone-600 dark:bg-stone-900 dark:text-stone-400">
               user
             </span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if can_manage_cluster and user.id != current_sub %}
+            <form method="post" action="{{ url_for('set_cluster_role', user_id=user.id) }}" class="flex items-center gap-2">
+              <label for="cluster-role-{{ user.id }}" class="sr-only">Cluster access for {{ user.username }}</label>
+              <select
+                id="cluster-role-{{ user.id }}"
+                name="cluster_role"
+                class="rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 text-sm px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700"
+              >
+                {% for role in cluster_roles %}
+                <option value="{{ role }}"{% if role == user.cluster_role %} selected{% endif %}>{{ role }}</option>
+                {% endfor %}
+              </select>
+              <button
+                type="submit"
+                class="text-sm font-medium text-amber-700 hover:text-amber-800 dark:text-amber-500 dark:hover:text-amber-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-stone-950 rounded"
+              >
+                Save
+              </button>
+            </form>
+            {% else %}
+            <span class="text-stone-600 dark:text-stone-400">{{ user.cluster_role }}</span>
             {% endif %}
           </td>
           <td class="px-4 py-3 text-right">
