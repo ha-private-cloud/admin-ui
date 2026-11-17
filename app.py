@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlencode
 
 import requests
 from flask import Flask, abort, g, redirect, render_template, request, url_for
@@ -43,6 +44,9 @@ app.config["INVITE_EMAIL_LOGO_URL"] = os.environ.get(
 ).strip()
 
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+INVITE_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{20,128}")
+INVITE_NOTICE_COOKIE = "__Host-ck_invite"
+INVITE_NOTICE_COOKIE_OPTIONS = {"path": "/", "secure": True, "httponly": True, "samesite": "Strict"}
 
 GIB = 1024**3
 MAX_QUOTA_GB = 1_000_000
@@ -219,6 +223,23 @@ def _send_invite_email(invite_id, address, link, expires_at):
     return True
 
 
+def _invite_link(token):
+    return f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/join?invite={token}"
+
+
+def _invite_notice():
+    fields = parse_qs(request.cookies.get(INVITE_NOTICE_COOKIE, ""))
+    email = fields.get("email", [""])[0]
+    if email and not EMAIL_PATTERN.fullmatch(email):
+        return {}
+    if fields.get("sent") == ["1"] and email:
+        return {"invite_sent_to": email}
+    token = fields.get("token", [""])[0]
+    if not INVITE_TOKEN_PATTERN.fullmatch(token):
+        return {}
+    return {"new_invite_link": _invite_link(token), "invite_email_failed_for": email or None}
+
+
 def _gib(value):
     amount = value / GIB
     return f"{amount:.0f}" if amount >= 10 or amount == int(amount) else f"{amount:.1f}"
@@ -301,7 +322,12 @@ def require_admin():
 
 @app.get("/")
 def index():
-    return _render_index()
+    if INVITE_NOTICE_COOKIE not in request.cookies:
+        return _render_index()
+    page = app.make_response(_render_index(**_invite_notice()))
+    page.delete_cookie(INVITE_NOTICE_COOKIE, **INVITE_NOTICE_COOKIE_OPTIONS)
+    page.headers["Cache-Control"] = "no-store"
+    return page
 
 
 @app.post("/users/<user_id>/role")
@@ -389,11 +415,12 @@ def create_invite():
     if response.status_code != 201:
         abort(502, "could not create the invite")
     invite = response.json()
-    link = f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/join?invite={invite['token']}"
-    if email and _send_invite_email(invite["id"], email, link, invite["expires_at"]):
-        page = app.make_response(_render_index(invite_sent_to=email))
+    if email and _send_invite_email(invite["id"], email, _invite_link(invite["token"]), invite["expires_at"]):
+        notice = {"sent": "1", "email": email}
     else:
-        page = app.make_response(_render_index(new_invite_link=link, invite_email_failed_for=email or None))
+        notice = {"token": invite["token"], **({"email": email} if email else {})}
+    page = redirect(url_for("index"), code=303)
+    page.set_cookie(INVITE_NOTICE_COOKIE, urlencode(notice), max_age=60, **INVITE_NOTICE_COOKIE_OPTIONS)
     page.headers["Cache-Control"] = "no-store"
     return page
 
