@@ -29,6 +29,11 @@ app.config["STORAGE_UI_URL"] = os.environ.get(
     "STORAGE_UI_URL", "https://storage-dev.clusterkeep.dev.net"
 ).strip()
 app.config["HEADLAMP_URL"] = os.environ.get("HEADLAMP_URL", "").strip()
+app.config["STORAGE_API_URL"] = os.environ.get("STORAGE_API_URL", "").strip()
+app.config["STORAGE_API_TOKEN"] = os.environ.get("STORAGE_API_TOKEN", "").strip()
+
+GIB = 1024**3
+MAX_QUOTA_GB = 1_000_000
 
 CONTENT_SECURITY_POLICY = "; ".join(
     [
@@ -131,6 +136,84 @@ def _patch_groups(headers, user_id, groups):
         abort(502, "could not update groups")
 
 
+def _storage(method, path, **kwargs):
+    base = app.config["STORAGE_API_URL"]
+    token = app.config["STORAGE_API_TOKEN"]
+    if not (base and token):
+        return None
+    try:
+        return requests.request(
+            method,
+            f"{base.rstrip('/')}/api/v1/{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            cookies={SESSION_COOKIE_NAME: g.session_cookie},
+            timeout=5,
+            **kwargs,
+        )
+    except requests.RequestException:
+        return None
+
+
+def _storage_by_user():
+    """None when storage-api isn't configured, False when it couldn't be reached."""
+    if not (app.config["STORAGE_API_URL"] and app.config["STORAGE_API_TOKEN"]):
+        return None
+    response = _storage("GET", "admin/vaults")
+    if response is None or response.status_code != 200:
+        return False
+    return {v["user_id"]: v for v in response.json().get("items", [])}
+
+
+def _invites(headers):
+    try:
+        response = requests.get(_internal_url("/api/v1/invites"), headers=headers, timeout=5)
+    except requests.RequestException:
+        return None
+    return response.json() if response.status_code == 200 else None
+
+
+def _gib(value):
+    amount = value / GIB
+    return f"{amount:.0f}" if amount >= 10 or amount == int(amount) else f"{amount:.1f}"
+
+
+def _render_index(new_invite_link=None):
+    headers = _auth_headers()
+    response = requests.get(_internal_url("/api/v1/users"), headers=headers, timeout=5)
+    if response.status_code != 200:
+        abort(502, "could not list users")
+    storage = _storage_by_user()
+
+    users = []
+    for user in response.json():
+        vault = storage.get(user["id"]) if storage else None
+        users.append(
+            {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "role": "admin" if "admin" in user["groups"] else "user",
+                "cluster_role": _cluster_role(user["groups"]),
+                "is_active": user.get("is_active", True),
+                "storage": {
+                    "used": _gib(vault["used_bytes"]),
+                    "quota": _gib(vault["quota_bytes"]),
+                    "quota_gb": _gib(vault["quota_bytes"]),
+                } if vault else None,
+            }
+        )
+    return render_template(
+        "index.html",
+        users=users,
+        storage_state="off" if storage is None else "down" if storage is False else "ok",
+        invites=_invites(headers),
+        new_invite_link=new_invite_link,
+        current_sub=g.current_sub,
+        can_manage_cluster=g.can_manage_cluster,
+        cluster_roles=CLUSTER_ROLES,
+    )
+
+
 def logout_url():
     return f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/logout"
 
@@ -168,27 +251,7 @@ def require_admin():
 
 @app.get("/")
 def index():
-    response = requests.get(_internal_url("/api/v1/users"), headers=_auth_headers(), timeout=5)
-    if response.status_code != 200:
-        abort(502, "could not list users")
-
-    users = [
-        {
-            "id": user["id"],
-            "username": user["username"],
-            "email": user["email"],
-            "role": "admin" if "admin" in user["groups"] else "user",
-            "cluster_role": _cluster_role(user["groups"]),
-        }
-        for user in response.json()
-    ]
-    return render_template(
-        "index.html",
-        users=users,
-        current_sub=g.current_sub,
-        can_manage_cluster=g.can_manage_cluster,
-        cluster_roles=CLUSTER_ROLES,
-    )
+    return _render_index()
 
 
 @app.post("/users/<user_id>/role")
@@ -226,6 +289,63 @@ def set_cluster_role(user_id):
         groups.add(CLUSTER_ROLE_GROUPS[role])
 
     _patch_groups(headers, user_id, groups)
+    return redirect(url_for("index"))
+
+
+@app.post("/users/<user_id>/quota")
+def set_quota(user_id):
+    raw = request.form.get("quota_gb", "").strip()
+    try:
+        quota_gb = float(raw)
+    except ValueError:
+        abort(400)
+    if not 0 <= quota_gb <= MAX_QUOTA_GB:
+        abort(400)
+    response = _storage("PUT", f"admin/vaults/{user_id}/quota", json={"quota_bytes": int(quota_gb * GIB)})
+    if response is None or response.status_code != 200:
+        abort(502, "could not update the quota")
+    return redirect(url_for("index"))
+
+
+@app.post("/users/<user_id>/active")
+def set_active(user_id):
+    value = request.form.get("active", "")
+    if value not in ("true", "false"):
+        abort(400)
+    if user_id == g.current_sub:
+        abort(400, "cannot disable your own account")
+    response = requests.patch(
+        _internal_url(f"/api/v1/users/{user_id}/active"),
+        json={"is_active": value == "true"},
+        headers=_auth_headers(),
+        timeout=5,
+    )
+    if response.status_code == 403:
+        abort(403)
+    if response.status_code != 200:
+        abort(502, "could not change the account")
+    return redirect(url_for("index"))
+
+
+@app.post("/invites")
+def create_invite():
+    note = request.form.get("note", "").strip()[:255]
+    response = requests.post(
+        _internal_url("/api/v1/invites"), json={"note": note} if note else {}, headers=_auth_headers(), timeout=5
+    )
+    if response.status_code != 201:
+        abort(502, "could not create the invite")
+    link = f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/join?invite={response.json()['token']}"
+    page = app.make_response(_render_index(new_invite_link=link))
+    page.headers["Cache-Control"] = "no-store"
+    return page
+
+
+@app.post("/invites/<invite_id>/revoke")
+def revoke_invite(invite_id):
+    response = requests.delete(_internal_url(f"/api/v1/invites/{invite_id}"), headers=_auth_headers(), timeout=5)
+    if response.status_code not in (204, 409):
+        abort(502, "could not withdraw the invite")
     return redirect(url_for("index"))
 
 

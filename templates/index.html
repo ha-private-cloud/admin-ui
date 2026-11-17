@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-3xl mx-auto">
+<div class="max-w-6xl mx-auto">
   <h1
     class="font-display text-3xl md:text-4xl font-bold text-stone-900 dark:text-stone-50 tracking-tight leading-tight mb-8"
   >
     Users
   </h1>
 
-  <div class="rounded-lg border border-stone-200 dark:border-stone-800 overflow-hidden">
+  <div class="rounded-lg border border-stone-200 dark:border-stone-800 overflow-x-auto">
     <table class="w-full text-sm">
       <thead class="bg-stone-100 dark:bg-stone-900">
         <tr>
@@ -16,6 +16,8 @@
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Email</th>
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Role</th>
           <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Cluster access</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Storage</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Status</th>
           <th class="px-4 py-3"></th>
         </tr>
       </thead>
@@ -61,7 +63,34 @@
             <span class="text-stone-600 dark:text-stone-400">{{ user.cluster_role }}</span>
             {% endif %}
           </td>
-          <td class="px-4 py-3 text-right">
+          <td class="px-4 py-3">
+            {% if storage_state == "down" %}
+            <span class="text-stone-500 dark:text-stone-400">Storage details are unavailable</span>
+            {% elif storage_state == "ok" and user.storage %}
+            <form method="post" action="{{ url_for('set_quota', user_id=user.id) }}" class="flex items-center gap-2 whitespace-nowrap">
+              <span class="text-stone-600 dark:text-stone-400">{{ user.storage.used }} GB of {{ user.storage.quota }} GB</span>
+              <label for="quota-{{ user.id }}" class="sr-only">Quota in GB for {{ user.username }}</label>
+              <input id="quota-{{ user.id }}" type="number" name="quota_gb" value="{{ user.storage.quota_gb }}" min="0" step="1" required class="w-20 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 text-sm px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700" />
+              <button type="submit" class="text-sm font-medium text-amber-700 hover:text-amber-800 dark:text-amber-500 dark:hover:text-amber-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-stone-950 rounded">Set</button>
+            </form>
+            {% elif storage_state == "ok" %}
+            <span class="text-stone-500 dark:text-stone-400">Not set up yet</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if user.is_active %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">Active</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200">Disabled</span>
+            {% endif %}
+            {% if user.id != current_sub %}
+            <form method="post" action="{{ url_for('set_active', user_id=user.id) }}" class="inline">
+              <input type="hidden" name="active" value="{{ 'false' if user.is_active else 'true' }}" />
+              <button type="submit" class="ml-2 text-sm font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-stone-950 rounded">{{ "Disable" if user.is_active else "Enable" }}</button>
+            </form>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right whitespace-nowrap">
             <form method="post" action="{{ url_for('set_role', user_id=user.id) }}">
               {% if user.role == "admin" %}
               <input type="hidden" name="role" value="user" />
@@ -87,5 +116,61 @@
       </tbody>
     </table>
   </div>
+
+  <h2 class="font-display text-2xl font-bold text-stone-900 dark:text-stone-50 mt-12 mb-4">Invites</h2>
+  <p class="text-sm text-stone-600 dark:text-stone-400 mb-4">Each invite link works once and expires after 7 days.</p>
+
+  {% if new_invite_link %}
+  <div class="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-4 py-3 mb-6" role="status">
+    <p class="text-sm font-medium text-stone-900 dark:text-stone-50 mb-2">Send this link to the person you're inviting. It won't be shown again.</p>
+    <label for="new-invite-link" class="sr-only">Invite link</label>
+    <input id="new-invite-link" type="text" readonly value="{{ new_invite_link }}" class="w-full font-mono rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 text-sm px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700" />
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('create_invite') }}" class="flex flex-wrap items-center gap-3 mb-6">
+    <label for="invite-note" class="sr-only">Who the invite is for</label>
+    <input id="invite-note" type="text" name="note" maxlength="255" placeholder="Who it's for (optional)" class="w-64 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 text-sm px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700" />
+    <button type="submit" class="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold text-white bg-amber-700 hover:bg-amber-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-stone-950">Create invite</button>
+  </form>
+
+  {% if invites is none %}
+  <p class="text-sm text-stone-500 dark:text-stone-400">Invites are unavailable right now.</p>
+  {% elif invites %}
+  <div class="rounded-lg border border-stone-200 dark:border-stone-800 overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-stone-100 dark:bg-stone-900">
+        <tr>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">For</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Status</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Created</th>
+          <th class="text-left font-medium text-stone-600 dark:text-stone-400 px-4 py-3">Expires</th>
+          <th class="px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-stone-200 dark:divide-stone-800">
+        {% for invite in invites %}
+        <tr>
+          <td class="px-4 py-3 text-stone-900 dark:text-stone-100">{{ invite.note or "" }}</td>
+          <td class="px-4 py-3 text-stone-600 dark:text-stone-400">
+            {% if invite.status == "used" %}Used by {{ invite.used_by or "a deleted user" }}{% else %}{{ invite.status|capitalize }}{% endif %}
+          </td>
+          <td class="px-4 py-3 text-stone-600 dark:text-stone-400">{{ invite.created_at[:10] }}{% if invite.created_by %} by {{ invite.created_by }}{% endif %}</td>
+          <td class="px-4 py-3 text-stone-600 dark:text-stone-400">{{ invite.expires_at[:10] }}</td>
+          <td class="px-4 py-3 text-right">
+            {% if invite.status == "open" %}
+            <form method="post" action="/invites/{{ invite.id }}/revoke">
+              <button type="submit" class="text-sm font-medium text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-stone-950 rounded">Withdraw</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-sm text-stone-500 dark:text-stone-400">No invites yet.</p>
+  {% endif %}
 </div>
 {% endblock %}
