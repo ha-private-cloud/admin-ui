@@ -55,7 +55,8 @@ resource "kubernetes_secret" "admin_ui" {
   }
 
   data = {
-    STORAGE_API_TOKEN = var.storage_api_token
+    STORAGE_API_TOKEN    = var.storage_api_token
+    LETTERMINT_API_TOKEN = var.lettermint_api_token
   }
 }
 
@@ -91,6 +92,17 @@ resource "helm_release" "admin_ui" {
             secretKeyRef = {
               name = kubernetes_secret.admin_ui.metadata[0].name
               key  = "STORAGE_API_TOKEN"
+            }
+          }
+        },
+        { name = "INVITE_EMAIL_FROM", value = var.invite_email_from },
+        { name = "INVITE_EMAIL_CONTACT", value = var.invite_email_contact },
+        {
+          name = "LETTERMINT_API_TOKEN"
+          valueFrom = {
+            secretKeyRef = {
+              name = kubernetes_secret.admin_ui.metadata[0].name
+              key  = "LETTERMINT_API_TOKEN"
             }
           }
         },
