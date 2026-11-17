@@ -70,3 +70,16 @@ variable "headlamp_url" {
   type        = string
   default     = "https://headlamp.clusterkeep.dev.net"
 }
+
+variable "storage_api_url" {
+  description = "In-cluster storage-api URL used to show and set each user's quota. Blank hides storage details."
+  type        = string
+  default     = ""
+}
+
+variable "storage_api_token" {
+  description = "Shared bearer token for storage-api. Must match storage-api's service_token."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
