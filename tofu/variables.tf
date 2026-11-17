@@ -83,3 +83,22 @@ variable "storage_api_token" {
   default     = ""
   sensitive   = true
 }
+
+variable "lettermint_api_token" {
+  description = "Lettermint project API token used to email invite links. Blank hides the email field."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "invite_email_from" {
+  description = "Sender for invite emails. The domain must be verified in Lettermint."
+  type        = string
+  default     = "ClusterKeep <noreply@clusterkeep.com>"
+}
+
+variable "invite_email_contact" {
+  description = "Contact address shown at the bottom of invite emails. Blank leaves it out."
+  type        = string
+  default     = ""
+}

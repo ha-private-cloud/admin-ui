@@ -1,4 +1,6 @@
+import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -6,6 +8,7 @@ import requests
 from flask import Flask, abort, g, redirect, render_template, request, url_for
 
 app = Flask(__name__)
+log = logging.getLogger(__name__)
 
 APP_TITLE = os.environ.get("APP_TITLE", "ClusterKeep")
 SESSION_COOKIE_NAME = "ck_sso"
@@ -31,6 +34,15 @@ app.config["STORAGE_UI_URL"] = os.environ.get(
 app.config["HEADLAMP_URL"] = os.environ.get("HEADLAMP_URL", "").strip()
 app.config["STORAGE_API_URL"] = os.environ.get("STORAGE_API_URL", "").strip()
 app.config["STORAGE_API_TOKEN"] = os.environ.get("STORAGE_API_TOKEN", "").strip()
+app.config["LETTERMINT_API_URL"] = os.environ.get("LETTERMINT_API_URL", "https://api.lettermint.co/v1").strip()
+app.config["LETTERMINT_API_TOKEN"] = os.environ.get("LETTERMINT_API_TOKEN", "").strip()
+app.config["INVITE_EMAIL_FROM"] = os.environ.get("INVITE_EMAIL_FROM", "ClusterKeep <noreply@clusterkeep.com>").strip()
+app.config["INVITE_EMAIL_CONTACT"] = os.environ.get("INVITE_EMAIL_CONTACT", "").strip()
+app.config["INVITE_EMAIL_LOGO_URL"] = os.environ.get(
+    "INVITE_EMAIL_LOGO_URL", "https://clusterkeep.com/static/images/icon-192.png"
+).strip()
+
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 GIB = 1024**3
 MAX_QUOTA_GB = 1_000_000
@@ -172,12 +184,47 @@ def _invites(headers):
     return response.json() if response.status_code == 200 else None
 
 
+def _email_enabled():
+    return bool(app.config["LETTERMINT_API_TOKEN"])
+
+
+def _send_invite_email(invite_id, address, link, expires_at):
+    context = {
+        "title": APP_TITLE,
+        "link": link,
+        "expires": expires_at[:10],
+        "logo_url": app.config["INVITE_EMAIL_LOGO_URL"],
+        "contact": app.config["INVITE_EMAIL_CONTACT"],
+    }
+    try:
+        response = requests.post(
+            f"{app.config['LETTERMINT_API_URL'].rstrip('/')}/send",
+            headers={"x-lettermint-token": app.config["LETTERMINT_API_TOKEN"], "Idempotency-Key": f"invite-{invite_id}"},
+            json={
+                "from": app.config["INVITE_EMAIL_FROM"],
+                "to": [address],
+                "subject": f"You've been invited to join {APP_TITLE}",
+                "text": render_template("email/invite.txt", **context),
+                "html": render_template("email/invite.html", **context),
+                "settings": {"track_opens": False, "track_clicks": False},
+            },
+            timeout=10,
+        )
+    except requests.RequestException as error:
+        log.warning("invite email %s not sent: %s", invite_id, type(error).__name__)
+        return False
+    if response.status_code != 202:
+        log.warning("invite email %s not sent: lettermint returned %s", invite_id, response.status_code)
+        return False
+    return True
+
+
 def _gib(value):
     amount = value / GIB
     return f"{amount:.0f}" if amount >= 10 or amount == int(amount) else f"{amount:.1f}"
 
 
-def _render_index(new_invite_link=None):
+def _render_index(new_invite_link=None, invite_sent_to=None, invite_email_failed_for=None):
     headers = _auth_headers()
     response = requests.get(_internal_url("/api/v1/users"), headers=headers, timeout=5)
     if response.status_code != 200:
@@ -208,6 +255,9 @@ def _render_index(new_invite_link=None):
         storage_state="off" if storage is None else "down" if storage is False else "ok",
         invites=_invites(headers),
         new_invite_link=new_invite_link,
+        invite_sent_to=invite_sent_to,
+        invite_email_failed_for=invite_email_failed_for,
+        invite_email_enabled=_email_enabled(),
         current_sub=g.current_sub,
         can_manage_cluster=g.can_manage_cluster,
         cluster_roles=CLUSTER_ROLES,
@@ -329,14 +379,21 @@ def set_active(user_id):
 
 @app.post("/invites")
 def create_invite():
-    note = request.form.get("note", "").strip()[:255]
+    email = request.form.get("email", "").strip() if _email_enabled() else ""
+    if email and (len(email) > 254 or not EMAIL_PATTERN.fullmatch(email)):
+        abort(400, "that email address doesn't look right")
+    note = request.form.get("note", "").strip()[:255] or email
     response = requests.post(
         _internal_url("/api/v1/invites"), json={"note": note} if note else {}, headers=_auth_headers(), timeout=5
     )
     if response.status_code != 201:
         abort(502, "could not create the invite")
-    link = f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/join?invite={response.json()['token']}"
-    page = app.make_response(_render_index(new_invite_link=link))
+    invite = response.json()
+    link = f"{app.config['CLUSTERKEEP_UI_URL'].rstrip('/')}/join?invite={invite['token']}"
+    if email and _send_invite_email(invite["id"], email, link, invite["expires_at"]):
+        page = app.make_response(_render_index(invite_sent_to=email))
+    else:
+        page = app.make_response(_render_index(new_invite_link=link, invite_email_failed_for=email or None))
     page.headers["Cache-Control"] = "no-store"
     return page
 

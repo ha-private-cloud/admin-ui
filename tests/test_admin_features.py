@@ -1,4 +1,7 @@
+import json
+
 import pytest
+import requests
 import responses as responses_lib
 
 from app import app
@@ -112,3 +115,94 @@ def test_revoking_an_invite_calls_auth_api(client):
         mock_mint(rsps)
         rsps.add(responses_lib.DELETE, f"{AUTH_API_INTERNAL_URL}/api/v1/invites/inv-open", status=204)
         assert client.post("/invites/inv-open/revoke").status_code == 302
+
+
+LETTERMINT = "https://api.lettermint.co/v1/send"
+NEW_INVITE = {"id": "inv-new", "token": "secret-token", "note": "kim@example.com", "expires_at": "2026-11-24T10:00:00+00:00"}
+
+
+@pytest.fixture
+def lettermint(monkeypatch):
+    monkeypatch.setitem(app.config, "LETTERMINT_API_TOKEN", "lm_test")
+
+
+def mock_new_invite(rsps, note="kim@example.com"):
+    mock_mint(rsps)
+    rsps.add(responses_lib.POST, f"{AUTH_API_INTERNAL_URL}/api/v1/invites", json=NEW_INVITE, status=201,
+             match=[responses_lib.matchers.json_params_matcher({"note": note})])
+
+
+def test_email_field_is_hidden_without_a_lettermint_token(client):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_index(rsps)
+        body = client.get("/").get_data(as_text=True)
+    assert 'name="email"' not in body
+
+
+def test_an_invite_can_be_emailed(client, lettermint):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_new_invite(rsps)
+        sent = rsps.add(responses_lib.POST, LETTERMINT, json={"message_id": "m1", "status": "pending"}, status=202,
+                        match=[responses_lib.matchers.header_matcher(
+                            {"x-lettermint-token": "lm_test", "Idempotency-Key": "invite-inv-new"})])
+        mock_index(rsps)
+        response = client.post("/invites", data={"email": "kim@example.com"})
+    body = response.get_data(as_text=True)
+    assert 'name="email"' in body
+    assert "Invite link emailed to kim@example.com" in body
+    assert "secret-token" not in body
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = json.loads(sent.calls[0].request.body)
+    assert payload["to"] == ["kim@example.com"]
+    assert payload["from"] == "ClusterKeep <noreply@clusterkeep.com>"
+    assert payload["settings"] == {"track_opens": False, "track_clicks": False}
+    assert "https://dev.clusterkeep.dev.net/join?invite=secret-token" in payload["text"]
+    assert 'href="https://dev.clusterkeep.dev.net/join?invite=secret-token"' in payload["html"]
+    assert "2026-11-24" in payload["text"]
+    assert 'src="https://clusterkeep.com/static/images/icon-192.png"' in payload["html"]
+    assert "Contact" not in payload["text"]
+    assert "Contact" not in payload["html"]
+
+
+def test_invite_emails_show_a_contact_when_set(client, lettermint, monkeypatch):
+    monkeypatch.setitem(app.config, "INVITE_EMAIL_CONTACT", "help@example.com")
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_new_invite(rsps)
+        sent = rsps.add(responses_lib.POST, LETTERMINT, json={"message_id": "m1", "status": "pending"}, status=202)
+        mock_index(rsps)
+        client.post("/invites", data={"email": "kim@example.com"})
+    payload = json.loads(sent.calls[0].request.body)
+    assert "Contact: help@example.com" in payload["text"]
+    assert 'href="mailto:help@example.com"' in payload["html"]
+
+
+def test_an_explicit_note_is_kept_when_emailing(client, lettermint):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_new_invite(rsps, note="Kim")
+        rsps.add(responses_lib.POST, LETTERMINT, json={"message_id": "m1", "status": "pending"}, status=202)
+        mock_index(rsps)
+        assert client.post("/invites", data={"note": "Kim", "email": "kim@example.com"}).status_code == 200
+
+
+@pytest.mark.parametrize("failure", [{"status": 422, "json": {"message": "bad"}},
+                                     {"body": requests.ConnectionError()}])
+def test_the_link_is_shown_when_the_email_fails(client, lettermint, failure):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        mock_new_invite(rsps)
+        rsps.add(responses_lib.POST, LETTERMINT, **failure)
+        mock_index(rsps)
+        body = client.post("/invites", data={"email": "kim@example.com"}).get_data(as_text=True)
+    assert "to kim@example.com couldn't be sent" in body
+    assert "https://dev.clusterkeep.dev.net/join?invite=secret-token" in body
+
+
+@pytest.mark.parametrize("address", ["not-an-email", "a@b", "kim@example.com\nBcc: x@y.z", "a" * 250 + "@x.io"])
+def test_bad_email_addresses_are_refused(client, lettermint, address):
+    with responses_lib.RequestsMock() as rsps:
+        as_admin(client, rsps)
+        assert client.post("/invites", data={"email": address}).status_code == 400

@@ -1,0 +1,8 @@
+You've been invited to create an account on {{ title }}.
+
+Create your account here:
+{{ link }}
+
+The link works once and expires on {{ expires }}. If you weren't expecting this, you can ignore this email.{% if contact %}
+
+Contact: {{ contact }}{% endif %}
