@@ -17,12 +17,13 @@ variable "image_repository" {
 }
 
 variable "image_tag" {
-  description = "For dev/preview (image_tag_prefix != \"\"): fallback tag, used only if no pushed tag matches image_tag_prefix yet. For prd (image_tag_prefix == \"\"): authoritative on every apply - keep it in sync with the current release tag."
+  description = "For dev/preview (image_tag_prefix != \"\"): fallback tag, used only if no pushed tag matches image_tag_prefix yet. For prd (image_tag_prefix == \"\"): leave blank to deploy the highest vX.Y.Z tag on GitHub; set it (e.g. -var image_tag=v1.6.0) to pin a release or roll back."
   type        = string
+  default     = ""
 }
 
 variable "image_tag_prefix" {
-  description = "Which branch's tag channel this environment tracks: \"DEV-\" or \"PREVIEW-\". \"\" (prd) disables the auto-latest-tag lookup, since release tags are vX.Y.Z, not plain-numeric."
+  description = "Which branch's tag channel this environment tracks: \"DEV-\" or \"PREVIEW-\". \"\" (prd) deploys release tags instead - see image_tag."
   type        = string
   default     = "DEV-"
 }
@@ -49,7 +50,7 @@ variable "image_pull_secret_name" {
 variable "auth_api_internal_url" {
   description = "In-cluster Service URL for auth-api. Used for this backend's own server-to-server session check -- the public hostname above only resolves for browsers, not pods."
   type        = string
-  default     = "http://auth-api.clusterkeep-dev-priv.svc.cluster.local"
+  default     = "http://auth-api.auth-dev-pub.svc.cluster.local"
 }
 
 variable "clusterkeep_ui_base_url" {
